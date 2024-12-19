@@ -17,6 +17,7 @@ from TTS.api import TTS
 from moviepy.editor import AudioFileClip, concatenate_videoclips, ImageSequenceClip
 from scipy.io.wavfile import write
 import os
+import ollama
 
 torch.manual_seed(42)
 
@@ -79,7 +80,7 @@ def convert_to_json(script):
     json_output = ollama.generate(
         model='qwen2.5:32b',
         format='json',
-        keep_alive=1,
+        #keep_alive=1,
         prompt=f"Take the following script and turn it into json format, it should be an array containing scenes, each scene should contain a imageDescription and voiceover field. In the voiceover string change any single quotes to double quotes. Here's the script: {script}"
     )
     return json.loads(json_output['response'])
@@ -99,14 +100,14 @@ def export_to_video(frames, path, fps):
     with open(path, "wb") as f:
         f.write(video_bytes)
 
-def generate_hunyuan_video(prompt, output_path, fps=24, height=720, width=480, num_frames=120, prompt_template=prompt_template, num_inference_steps=15):
+def generate_hunyuan_video(prompt, output_path, fps=14, height=720, width=480, num_frames=120, prompt_template=prompt_template, num_inference_steps=15):
     """
     Generate a video using the HunyuanVideoPipeline based on the provided prompt.
     
     Args:
         prompt (str): The description of the scene to generate a video for.
         output_path (str): The path to save the generated video file.
-        fps (int, optional): Frames per second. Defaults to 24.
+        fps (int, optional): Frames per second. Defaults to 14.
         height (int, optional): Height of the video frames. Defaults to 720.
         width (int, optional): Width of the video frames. Defaults to 480.
         num_frames (int, optional): Number of frames in the video. Defaults to 120.
@@ -137,7 +138,9 @@ def synthesize_speech(voiceover, speaker_wavs):
     """
     device = "cuda" if torch.cuda.is_available() else "cpu"
     tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2").to(device)
-    return tts.tts(voiceover, speaker_wav=speaker_wavs, language="en")
+    #return tts.tts(voiceover, speaker_wav=speaker_wavs, language="en")
+    return tts.tts(voiceover, speaker_wav=speaker_wavs, language="en"), tts
+
 
 def create_video_from_scripts(scriptdicts, output_filenames, sample_rate=24000, fps=24):
     """
@@ -233,6 +236,10 @@ def process_batch_of_scripts(batch_size=10):
             valid = True
             for scene in scriptdict['scenes']:
                 if 'imageDescription' not in scene or 'voiceover' not in scene:
+                    #also fail if the voiceover is empty
+                    if scene['voiceover'] == "":
+                        valid = False
+                        break
                     valid = False
                     break
 
@@ -241,7 +248,11 @@ def process_batch_of_scripts(batch_size=10):
                 print(json.dumps(scriptdict, indent=4))
                 user_input = input("Approve the script? (y/n): ")
                 if user_input.lower() != "y":
-                    script_generated = False
+                    skip_to_next_story = input("Skip to the next story? (y/n): ")
+                    if skip_to_next_story.lower() == "y":
+                        break
+                    else:
+                        script_generated = False
             else:
                 attempts += 1
                 print(f"Script for story {storynum} is invalid. Retrying...")
@@ -255,10 +266,17 @@ def process_batch_of_scripts(batch_size=10):
         
         for scene in tqdm(scriptdict['scenes'], desc=f"Script {idx + 1} Scenes", leave=False):
             print(scene['voiceover'])
-            scene['wav'] = synthesize_speech(scene['voiceover'], speaker_wavs)
+            audio_data, tts_model = synthesize_speech(scene['voiceover'], speaker_wavs)
+            scene['wav'] = audio_data
 
     output_filenames = [output_filename for _, output_filename in scripts]
+
+    # Unload the TTS model from memory
+    del tts_model
+    torch.cuda.empty_cache()
+
     create_video_from_scripts([scriptdict for scriptdict, _ in scripts], output_filenames)
+
 def main():
     process_batch_of_scripts(batch_size=1)
 
