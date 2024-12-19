@@ -1,0 +1,13 @@
+# Ignore everything
+*
+
+# Unignore specific files and directories
+!*.py
+!*.ipynb
+
+# If there are any specific directories you want to include, unignore them here
+# For example:
+# !my_directory/
+
+# Unignore this .gitignore file itself
+!.gitignore
