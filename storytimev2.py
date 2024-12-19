@@ -1,25 +1,51 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-import ollama
+import torch
+from diffusers import HunyuanVideoPipeline, HunyuanVideoTransformer3DModel, BitsAndBytesConfig
+import imageio as iio
+import math
+import numpy as np
+import io
+import time
 import pandas as pd
 import json
-from random import sample, randint
-import time
-from diffusers import StableDiffusionXLPipeline, DPMSolverMultistepScheduler, StableVideoDiffusionPipeline
-import torch
-import cv2
-from TTS.api import TTS
-from moviepy.editor import ImageSequenceClip, AudioFileClip, concatenate_videoclips
-from scipy.io.wavfile import write
-import numpy as np
-import os
+from random import sample
 import gc
 from tqdm import tqdm
+from TTS.api import TTS
+from moviepy.editor import AudioFileClip, concatenate_videoclips, ImageSequenceClip
+from scipy.io.wavfile import write
+import os
 
+torch.manual_seed(42)
+
+prompt_template = {
+    "template": (
+        "<|start_header_id|>system<|end_header_id|>\n\nDescribe the video by detailing the following aspects: "
+        "1. The main content and theme of the video."
+        "2. The color, shape, size, texture, quantity, text, and spatial relationships of the contents, including objects, people, and anything else."
+        "3. Actions, events, behaviors temporal relationships, physical movement changes of the contents."
+        "4. Background environment, light, style, atmosphere, and qualities."
+        "5. Camera angles, movements, and transitions used in the video."
+        "6. Thematic and aesthetic concepts associated with the scene, i.e. realistic, futuristic, fairy tale, etc<|eot_id|>"
+        "<|start_header_id|>user<|end_header_id|>\n\n{}<|eot_id|>"
+    ),
+    "crop_start": 95,
+}
+
+model_id = "tencent/HunyuanVideo"
+quantization_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_quant_type="nf4", llm_int8_skip_modules=["proj_out", "norm_out"])
+transformer = HunyuanVideoTransformer3DModel.from_pretrained(
+    model_id, subfolder="transformer", torch_dtype=torch.bfloat16, revision="refs/pr/18", quantization_config=quantization_config
+)
+pipe = HunyuanVideoPipeline.from_pretrained(model_id, transformer=transformer, torch_dtype=torch.float16, revision="refs/pr/18")
+pipe.scheduler._shift = 7.0
+pipe.vae.enable_tiling()
+pipe.enable_model_cpu_offload()
+    
 def setup_environment():
     """Set up the environment by disabling telemetry."""
-    # get_ipython().system('export DISABLE_TELEMETRY=YES')
     os.environ['DISABLE_TELEMETRY'] = 'YES'
 
 def load_data(file_path):
@@ -29,35 +55,16 @@ def load_data(file_path):
 def generate_script(inspiration_text):
     """
     Generate a video script based on the provided inspiration text.
-    
     Args:
         inspiration_text (str): The story or text to inspire the script.
-        
     Returns:
         str: The generated script.
     """
     script = ollama.generate(
-        model='llama3:70b-instruct',
-        prompt=f"You are the world's best social media video script writer. Take the following story and turn it into an original viral short form video voiceover script for TikTok. The script should take no more than two minutes to narrate and should have a hook at the beginning to catch the viewer's attention in the first 5 seconds that isn't cheesy. For each scene, write a very detailed description of the scene in a way that could be used by a stable diffusion AI model to generate an image to accompany the voiceover. The voiceover should convey the entire story completely on its own, don't rely on the image descriptions to tell the story. Only for the image description come up with appropriate first and last names of any characters and always use their full name for each scene also describe them physically for each scene. Here's the story: {inspiration_text}"
+        model='qwen2.5:32b',
+        prompt=f"You are the world's best social media video script writer. Take the following story and turn it into an original viral short form video voiceover script for TikTok. The script should take no more than two minutes to narrate and should have a hook at the beginning to catch the viewer's attention in the first 5 seconds that isn't cheesy. For each scene, write a very detailed scene description like in a movie screenplay and include any camera movements. The voiceover should convey the entire story completely on its own, don't rely on the image descriptions to tell the story. Only for the image description come up with appropriate first and last names of any characters and always use their full name for each scene also describe them physically for each scene. Here's the story: {inspiration_text}"
     )
     return script['response']
-
-def refine_script(script, promptguide):
-    """
-    Refine the generated script using a prompt guide to improve image descriptions.
-    
-    Args:
-        script (str): The original script.
-        promptguide (str): The prompt guide text for refining the script.
-        
-    Returns:
-        str: The refined script.
-    """
-    refined_script = ollama.generate(
-        model='llama3:70b-instruct',
-        prompt=f"Take the image descriptions and the voiceovers in the script and change the image descriptions using the techniques in the prompt guide i have attached below the script. The output should be the edited script (voiceovers and descriptions). Copy the voiceovers as is for each scene and ignore any afterword after the script. DON'T FORGET TO INCLUDE THE ORIGINAL VOICEOVER FROM THE SCRIPT! Here's the prompt guide: {promptguide} heres the script where you need to edit the image descriptions but leave the voiceover the same: Script: {script}"
-    )
-    return refined_script['response']
 
 def convert_to_json(script):
     """
@@ -70,79 +77,52 @@ def convert_to_json(script):
         dict: The script in JSON format.
     """
     json_output = ollama.generate(
-        model='llama3:70b-instruct',
+        model='qwen2.5:32b',
         format='json',
         keep_alive=1,
         prompt=f"Take the following script and turn it into json format, it should be an array containing scenes, each scene should contain a imageDescription and voiceover field. In the voiceover string change any single quotes to double quotes. Here's the script: {script}"
     )
     return json.loads(json_output['response'])
 
-def make_image(prompt):
+def export_to_video_bytes(fps, frames):
+    with io.BytesIO() as buffer:
+        writer = iio.get_writer(buffer, format='mp4', mode='I', fps=fps)
+        for frame in frames:
+            np_frame = np.array(frame)
+            writer.append_data(np_frame)
+        writer.close()
+        video_bytes = buffer.getvalue()
+    return video_bytes
+
+def export_to_video(frames, path, fps):
+    video_bytes = export_to_video_bytes(fps, frames)
+    with open(path, "wb") as f:
+        f.write(video_bytes)
+
+def generate_hunyuan_video(prompt, output_path, fps=24, height=720, width=480, num_frames=120, prompt_template=prompt_template, num_inference_steps=15):
     """
-    Generate an image using the Stable Diffusion XL pipeline based on the provided prompt.
+    Generate a video using the HunyuanVideoPipeline based on the provided prompt.
     
     Args:
-        prompt (str): The description of the scene to generate an image for.
-        
-    Returns:
-        PIL.Image: The generated image.
+        prompt (str): The description of the scene to generate a video for.
+        output_path (str): The path to save the generated video file.
+        fps (int, optional): Frames per second. Defaults to 24.
+        height (int, optional): Height of the video frames. Defaults to 720.
+        width (int, optional): Width of the video frames. Defaults to 480.
+        num_frames (int, optional): Number of frames in the video. Defaults to 120.
+        prompt_template (dict, optional): The template for the prompt. Defaults to a predefined template.
+        num_inference_steps (int, optional): Number of inference steps. Defaults to 15.
     """
-    pipeline = StableDiffusionXLPipeline.from_single_file(
-        "Juggernaut_X_RunDiffusion.safetensors",
-        torch_dtype=torch.float16, variant="fp16"
-    )
-    pipeline = pipeline.to("cuda")
-    pipeline.scheduler = DPMSolverMultistepScheduler.from_config(pipeline.scheduler.config)
+    output = pipe(
+        prompt=prompt,
+        height=height,
+        width=width,
+        num_frames=num_frames,
+        prompt_template=prompt_template,
+        num_inference_steps=num_inference_steps
+    ).frames[0]
     
-    image = pipeline(prompt=f"(anime, semi-realistic, cgi, render, blender, digital art, manga, amateur:1.3), (3D ,3D Game, 3D Game Scene, 3D Character:1.1), {prompt}",
-        negative_prompt="naked, penis, pussy, porn, nudity, (worst quality, low quality, normal quality, lowres, low details, oversaturated, undersaturated, overexposed, underexposed, grayscale, bw, bad photo, bad photography, bad art:1.4), (watermark, signature, text font, username, error, logo, words, letters, digits, autograph, trademark, name:1.2), (blur, blurry, grainy), morbid, ugly, asymmetrical, mutated malformed, mutilated, poorly lit, bad shadow, draft, cropped, out of frame, cut off, censored, jpeg artifacts, out of focus, glitch, duplicate, (bad hands, bad anatomy, bad body, bad face, bad teeth, bad arms, bad legs, deformities:1.3)",
-        width=832,
-        height=1216,
-        num_inference_steps=30,
-        guidance_scale=7.0,
-        preserve_init_image_color_profile=False,
-        upscale_amount=4,
-        latent_upscaler_steps=10,
-        sampler_name="dpmpp_2m_sde",
-        clip_skip=True,
-        tiling="none",
-        use_vae_model="",
-        use_controlnet_model="",
-        control_filter_to_apply="",
-        use_lora_model=[],
-        lora_alpha=[]
-    ).images[0]
-    return image
-
-def make_video(image):
-    """
-    Generate a video sequence from the provided image using the Stable Video Diffusion pipeline.
-    
-    Args:
-        image (PIL.Image): The input image to generate frames from.
-        
-    Returns:
-        list: A list of PIL images representing the video frames.
-    """
-    pipe = StableVideoDiffusionPipeline.from_pretrained(
-        "stabilityai/stable-video-diffusion-img2vid-xt", torch_dtype=torch.float16, variant="fp16"
-    )
-    pipe.enable_model_cpu_offload()
-    
-    generator = torch.manual_seed(42)
-    frames = pipe(image, decode_chunk_size=8, generator=generator, motion_bucket_id=30, noise_aug_strength=0.1).frames[0]
-    fixed_frames = list(map(lambda frame: frame.resize((832, 1216)), frames))
-    
-    return fixed_frames
-
-def flush_memory():
-    """Free up memory by deleting pipeline objects and clearing GPU cache."""
-    if 'pipeline' in globals():
-        del pipeline
-    if 'pipe' in globals():
-        del pipe
-    gc.collect()
-    torch.cuda.empty_cache()
+    export_to_video(output, output_path, fps=fps)
 
 def synthesize_speech(voiceover, speaker_wavs):
     """
@@ -173,15 +153,48 @@ def create_video_from_scripts(scriptdicts, output_filenames, sample_rate=24000, 
         clips = []
         
         for scene in tqdm(scriptdict['scenes'], desc=f"Script {idx + 1} Scenes", leave=False):
-            img_arrays = list(map(np.array, scene['videoframes']))
-            video_clip = ImageSequenceClip(sequence=img_arrays, fps=fps)
+            video_filename = f'temp_video_{idx}.mp4'
+            generate_hunyuan_video(scene['imageDescription'], video_filename)
             
             audio_filename = f'temp_audio_{idx}.wav'
             write(audio_filename, sample_rate, np.array(scene['wav']))
             audio_clip = AudioFileClip(audio_filename, fps=sample_rate)
             
-            video_clip = video_clip.loop()
-            video_clip = video_clip.set_duration(audio_clip.duration)
+            video_clip = iio.get_reader(video_filename, 'ffmpeg')
+            frame_count = int(video_clip.count_frames())
+            video_duration = frame_count / fps
+            audio_duration = audio_clip.duration
+            
+            if video_duration < audio_duration:
+                # Extend the video to match the audio duration
+                extend_frames = int((audio_duration - video_duration) * fps)
+                last_frame = video_clip.get_next_data()
+                for _ in range(extend_frames):
+                    video_clip.append(last_frame)
+            
+            elif video_duration > audio_duration:
+                # Trim the video to match the audio duration
+                trimmed_frames = []
+                for i, frame in enumerate(video_clip):
+                    if (i + 1) / fps <= audio_duration:
+                        trimmed_frames.append(frame)
+                video_clip.close()
+                
+                with io.BytesIO() as buffer:
+                    writer = iio.get_writer(buffer, format='mp4', mode='I', fps=fps)
+                    for frame in trimmed_frames:
+                        np_frame = np.array(frame)
+                        writer.append_data(np_frame)
+                    writer.close()
+                    extended_video_bytes = buffer.getvalue()
+                
+                with open(video_filename, "wb") as f:
+                    f.write(extended_video_bytes)
+            
+            video_clip = iio.get_reader(video_filename, 'ffmpeg')
+            frame_count = int(video_clip.count_frames())
+            video_duration = frame_count / fps
+            video_clip = ImageSequenceClip(sequence=video_clip, fps=fps)
             video_clip = video_clip.set_audio(audio_clip)
             
             clips.append(video_clip)
@@ -190,6 +203,10 @@ def create_video_from_scripts(scriptdicts, output_filenames, sample_rate=24000, 
         final_clip.write_videofile(output_filenames[idx])
         
         for scene_idx in range(len(scriptdict['scenes'])):
+            video_filename = f'temp_video_{scene_idx}.mp4'
+            if os.path.exists(video_filename):
+                os.remove(video_filename)
+
             audio_filename = f'temp_audio_{scene_idx}.wav'
             if os.path.exists(audio_filename):
                 os.remove(audio_filename)
@@ -203,24 +220,36 @@ def process_batch_of_scripts(batch_size=10):
         promptguide = file.read()
 
     scripts = []
+    speaker_wavs = ["zainvoice.wav", "zainvoice2.wav", "zainvoice3.wav", "zainvoice4.wav", "zainvoice5.wav", "zainvoice6.wav", "zainvoice7.wav"]
     for storynum in tqdm(story_indices, desc="Generating Scripts", unit="script"):
         inspo = df.iloc[storynum].selftext
-        script = generate_script(inspo)
-        refined_script = refine_script(script, promptguide)
-        scriptdict = convert_to_json(refined_script)
-        scripts.append((scriptdict, f'videos/story_{storynum}_output_video_{time.strftime("%Y_%m_%d-%I_%M_%S_%p")}.mp4'))
+        script_generated = False
+        attempts = 0
 
-    for idx in tqdm(range(len(scripts)), desc="Generating Images and Videos", unit="script"):
-        scriptdict, _ = scripts[idx]
-        
-        for scene in tqdm(scriptdict['scenes'], desc=f"Script {idx + 1} Scenes", leave=False):
-            print(scene['imageDescription'])
-            scene['image'] = make_image(scene['imageDescription'])
-            scene['videoframes'] = make_video(scene['image'])
+        while not script_generated and attempts < 3:
+            script = generate_script(inspo)
+            scriptdict = convert_to_json(script)
 
-    flush_memory()
+            valid = True
+            for scene in scriptdict['scenes']:
+                if 'imageDescription' not in scene or 'voiceover' not in scene:
+                    valid = False
+                    break
 
-    speaker_wavs = ["zainvoice.wav", "zainvoice2.wav", "zainvoice3.wav", "zainvoice4.wav", "zainvoice5.wav", "zainvoice6.wav", "zainvoice7.wav"]
+            if valid:
+                script_generated = True
+                print(json.dumps(scriptdict, indent=4))
+                user_input = input("Approve the script? (y/n): ")
+                if user_input.lower() != "y":
+                    script_generated = False
+            else:
+                attempts += 1
+                print(f"Script for story {storynum} is invalid. Retrying...")
+
+        if script_generated:
+            output_filename = f'videos/story_{storynum}_output_video_{time.strftime("%Y_%m_%d-%I_%M_%S_%p")}.mp4'
+            scripts.append((scriptdict, output_filename))
+
     for idx in tqdm(range(len(scripts)), desc="Synthesizing Speech", unit="script"):
         scriptdict, _ = scripts[idx]
         
@@ -228,11 +257,8 @@ def process_batch_of_scripts(batch_size=10):
             print(scene['voiceover'])
             scene['wav'] = synthesize_speech(scene['voiceover'], speaker_wavs)
 
-    flush_memory()
-
     output_filenames = [output_filename for _, output_filename in scripts]
     create_video_from_scripts([scriptdict for scriptdict, _ in scripts], output_filenames)
-
 def main():
     process_batch_of_scripts(batch_size=1)
 

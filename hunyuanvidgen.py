@@ -1,15 +1,6 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
-
-
-#!pip install --upgrade torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-
-
-# In[2]:
-
-
 import torch
 from diffusers import HunyuanVideoPipeline, HunyuanVideoTransformer3DModel, BitsAndBytesConfig
 import imageio as iio
@@ -17,16 +8,6 @@ import math
 import numpy as np
 import io
 import time
-
-
-# In[ ]:
-
-
-
-
-
-# In[3]:
-
 
 torch.manual_seed(42)
 
@@ -44,51 +25,24 @@ prompt_template = {
     "crop_start": 95,
 }
 
-
-
 model_id = "tencent/HunyuanVideo"
 quantization_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_quant_type="nf4", llm_int8_skip_modules=["proj_out", "norm_out"])
 transformer = HunyuanVideoTransformer3DModel.from_pretrained(
     model_id, subfolder="transformer", torch_dtype=torch.bfloat16, revision="refs/pr/18", quantization_config=quantization_config
 )
-pipe = HunyuanVideoPipeline.from_pretrained(model_id, transformer=transformer, torch_dtype=torch.float16, revision="refs/pr/18") #, device_map="balanced" )
+pipe = HunyuanVideoPipeline.from_pretrained(model_id, transformer=transformer, torch_dtype=torch.float16, revision="refs/pr/18")
 pipe.scheduler._shift = 7.0
 pipe.vae.enable_tiling()
 pipe.enable_model_cpu_offload()
 
-#start_time = time.perf_counter()
-
-# print("Time:", round(time.perf_counter() - start_time, 2), "seconds")
-# print("Max vram:", round(torch.cuda.max_memory_allocated(device="cuda") / 1024 ** 3, 3), "GiB")
-
-
-# In[4]:
-
-
 output = pipe(
     prompt="a cat walks along the sidewalk of a city. The camera follows the cat at knee level. The city has many people and cars moving around, with advertisement billboards in the background",
-    height = 720,
-    width = 480,
-    num_frames = 120,
+    height=720,
+    width=480,
+    num_frames=120,
     prompt_template=prompt_template,
-    num_inference_steps = 15,
+    num_inference_steps=15,
 ).frames[0]
-
-
-# In[5]:
-
-
-#print("Max vram:", round(torch.cuda.max_memory_allocated(device="cuda") / 1024 ** 3, 3), "GiB")
-
-
-# In[6]:
-
-
-output[-1]
-
-
-# In[7]:
-
 
 def export_to_video_bytes(fps, frames):
     with io.BytesIO() as buffer:
@@ -99,17 +53,9 @@ def export_to_video_bytes(fps, frames):
         writer.close()
         video_bytes = buffer.getvalue()
     return video_bytes
-    out_bytes = io.BytesIO(new_bytes)
-    return out_bytes
-
 def export_to_video(frames, path, fps):
     video_bytes = export_to_video_bytes(fps, frames)
     with open(path, "wb") as f:
         f.write(video_bytes)
 
-
-# In[8]:
-
-
 export_to_video(output, "output5.mp4", fps=15)
-
