@@ -174,7 +174,19 @@ def create_video_from_scripts(scriptdicts, output_filenames, sample_rate=24000, 
                 last_frame = video_clip.get_next_data()
                 for _ in range(extend_frames):
                     video_clip.append(last_frame)
-            
+
+            elif video_duration > audio_duration:
+                # Trim the video to match the audio duration
+                trimmed_frames = []
+                for i, frame in enumerate(video_clip):
+                    if (i + 1) / fps <= audio_duration:
+                        trimmed_frames.append(frame)
+                # Extend the video by looping
+                looped_video_clip = ImageSequenceClip(sequence=video_clip, fps=fps)
+                looped_video_clip = looped_video_clip.set_loop(duration=audio_duration, n=None, offset=0)
+                video_clip.close()
+                
+                video_clip = looped_video_clip
             elif video_duration > audio_duration:
                 # Trim the video to match the audio duration
                 trimmed_frames = []
