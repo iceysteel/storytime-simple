@@ -138,17 +138,17 @@ def synthesize_speech(voiceover, speaker_wavs):
     """
     device = "cuda" if torch.cuda.is_available() else "cpu"
     tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2").to(device)
-    #return tts.tts(voiceover, speaker_wav=speaker_wavs, language="en")
     return tts.tts(voiceover, speaker_wav=speaker_wavs, language="en"), tts
 
 
-def create_video_from_scripts(scriptdicts, output_filenames, sample_rate=24000, fps=24):
+def create_video_from_scripts(scriptdicts, output_filenames, audio_dicts, sample_rate=24000, fps=24):
     """
-    Create videos from the scenes in script dictionaries by combining images and audio.
+    Create videos from the scenes in script dictionaries by combining images and pre-generated audio.
     
     Args:
         scriptdicts (list): List of scripts in JSON format with scenes containing image descriptions and voiceovers.
         output_filenames (list): List of filenames to save the final videos.
+        audio_dicts (list): List of dictionaries mapping scene indices to their corresponding synthesized audio data.
         sample_rate (int, optional): The audio sample rate. Defaults to 24000.
         fps (int, optional): The frames per second for the video. Defaults to 24.
     """
@@ -160,7 +160,7 @@ def create_video_from_scripts(scriptdicts, output_filenames, sample_rate=24000, 
             generate_hunyuan_video(scene['imageDescription'], video_filename)
             
             audio_filename = f'temp_audio_{idx}_{scene_idx}.wav'
-            audio_data, tts = synthesize_speech(scene['voiceover'], ["path_to_speaker_wav_file.wav"])  # Replace with actual path
+            audio_data = audio_dicts[idx][scene_idx]
             write(audio_filename, sample_rate, (np.array(audio_data) * 32767).astype(np.int16))  # Convert float to int16
             audio_clip = AudioFileClip(audio_filename, fps=sample_rate)
             
@@ -216,12 +216,11 @@ def process_batch_of_scripts(batch_size=10):
     setup_environment()
     df = load_data('approved_stories.csv')
     story_indices = sample(range(len(df)), batch_size)
-    
-    with open('promptguide.txt', 'r') as file:
-        promptguide = file.read()
 
     scripts = []
     speaker_wavs = ["zainvoice.wav", "zainvoice2.wav", "zainvoice3.wav", "zainvoice4.wav", "zainvoice5.wav", "zainvoice6.wav", "zainvoice7.wav"]
+    audio_dicts = []
+
     for storynum in tqdm(story_indices, desc="Generating Scripts", unit="script"):
         inspo = df.iloc[storynum].selftext
         script_generated = False
@@ -234,7 +233,7 @@ def process_batch_of_scripts(batch_size=10):
             valid = True
             for scene in scriptdict['scenes']:
                 if 'imageDescription' not in scene or 'voiceover' not in scene:
-                    #also fail if the voiceover is empty
+                    # Also fail if the voiceover is empty
                     if scene['voiceover'] == "":
                         valid = False
                         break
@@ -259,13 +258,12 @@ def process_batch_of_scripts(batch_size=10):
             output_filename = f'videos/story_{storynum}_output_video_{time.strftime("%Y_%m_%d-%I_%M_%S_%p")}.mp4'
             scripts.append((scriptdict, output_filename))
 
-    for idx in tqdm(range(len(scripts)), desc="Synthesizing Speech", unit="script"):
-        scriptdict, _ = scripts[idx]
-        
-        for scene in tqdm(scriptdict['scenes'], desc=f"Script {idx + 1} Scenes", leave=False):
-            print(scene['voiceover'])
-            audio_data, tts_model = synthesize_speech(scene['voiceover'], speaker_wavs)
-            scene['wav'] = audio_data
+            audio_data_dict = {}
+            for scene_idx, scene in enumerate(tqdm(scriptdict['scenes'], desc=f"Script {len(scripts)} Scenes", leave=False)):
+                print(scene['voiceover'])
+                audio_data, tts_model = synthesize_speech(scene['voiceover'], speaker_wavs)
+                audio_data_dict[scene_idx] = audio_data
+                audio_dicts.append(audio_data_dict)
 
     output_filenames = [output_filename for _, output_filename in scripts]
 
@@ -273,7 +271,7 @@ def process_batch_of_scripts(batch_size=10):
     del tts_model
     torch.cuda.empty_cache()
 
-    create_video_from_scripts([scriptdict for scriptdict, _ in scripts], output_filenames)
+    create_video_from_scripts([scriptdict for scriptdict, _ in scripts], output_filenames, audio_dicts)
 
 def main():
     process_batch_of_scripts(batch_size=1)
