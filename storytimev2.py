@@ -155,34 +155,35 @@ def create_video_from_scripts(scriptdicts, output_filenames, sample_rate=24000, 
     for idx, scriptdict in enumerate(tqdm(scriptdicts, desc="Creating Videos", unit="script")):
         clips = []
         
-        for scene in tqdm(scriptdict['scenes'], desc=f"Script {idx + 1} Scenes", leave=False):
-            video_filename = f'temp_video_{idx}.mp4'
+        for scene_idx, scene in enumerate(tqdm(scriptdict['scenes'], desc=f"Script {idx + 1} Scenes", leave=False)):
+            video_filename = f'temp_video_{idx}_{scene_idx}.mp4'
             generate_hunyuan_video(scene['imageDescription'], video_filename)
             
-            audio_filename = f'temp_audio_{idx}.wav'
-            write(audio_filename, sample_rate, np.array(scene['wav']))
+            audio_filename = f'temp_audio_{idx}_{scene_idx}.wav'
+            audio_data, tts = synthesize_speech(scene['voiceover'], ["path_to_speaker_wav_file.wav"])  # Replace with actual path
+            write(audio_filename, sample_rate, (np.array(audio_data) * 32767).astype(np.int16))  # Convert float to int16
             audio_clip = AudioFileClip(audio_filename, fps=sample_rate)
             
-            video_clip = iio.get_reader(video_filename, 'ffmpeg')
-            frame_count = int(video_clip.count_frames())
+            video_frames = []
+            video_reader = iio.get_reader(video_filename, 'ffmpeg')
+            for frame in video_reader:
+                video_frames.append(frame)
+            video_reader.close()
+            frame_count = len(video_frames)
             video_duration = frame_count / fps
             audio_duration = audio_clip.duration
             
             if video_duration < audio_duration:
                 # Extend the video by looping
-                looped_video_clip = ImageSequenceClip(sequence=video_clip, fps=fps)
+                looped_video_clip = ImageSequenceClip(sequence=video_frames, fps=fps)
                 looped_video_clip = looped_video_clip.set_loop(duration=audio_duration, n=None, offset=0)
-                video_clip.close()
-                
                 video_clip = looped_video_clip
             elif video_duration > audio_duration:
                 # Trim the video to match the audio duration
                 trimmed_frames = []
-                for i, frame in enumerate(video_clip):
+                for i, frame in enumerate(video_frames):
                     if (i + 1) / fps <= audio_duration:
                         trimmed_frames.append(frame)
-                video_clip.close()
-                
                 with io.BytesIO() as buffer:
                     writer = iio.get_writer(buffer, format='mp4', mode='I', fps=fps)
                     for frame in trimmed_frames:
@@ -194,10 +195,7 @@ def create_video_from_scripts(scriptdicts, output_filenames, sample_rate=24000, 
                 with open(video_filename, "wb") as f:
                     f.write(extended_video_bytes)
             
-            video_clip = iio.get_reader(video_filename, 'ffmpeg')
-            frame_count = int(video_clip.count_frames())
-            video_duration = frame_count / fps
-            video_clip = ImageSequenceClip(sequence=video_clip, fps=fps)
+            video_clip = ImageSequenceClip(sequence=video_frames, fps=fps)
             video_clip = video_clip.set_audio(audio_clip)
             
             clips.append(video_clip)
@@ -206,11 +204,11 @@ def create_video_from_scripts(scriptdicts, output_filenames, sample_rate=24000, 
         final_clip.write_videofile(output_filenames[idx])
         
         for scene_idx in range(len(scriptdict['scenes'])):
-            video_filename = f'temp_video_{scene_idx}.mp4'
+            video_filename = f'temp_video_{idx}_{scene_idx}.mp4'
             if os.path.exists(video_filename):
                 os.remove(video_filename)
 
-            audio_filename = f'temp_audio_{scene_idx}.wav'
+            audio_filename = f'temp_audio_{idx}_{scene_idx}.wav'
             if os.path.exists(audio_filename):
                 os.remove(audio_filename)
 
