@@ -152,6 +152,8 @@ def create_video_from_scripts(scriptdicts, output_filenames, audio_dicts, sample
         sample_rate (int, optional): The audio sample rate. Defaults to 24000.
         fps (int, optional): The frames per second for the video. Defaults to 24.
     """
+    from moviepy.video.io.ImageSequenceClip import ImageSequenceClip
+    
     for idx, scriptdict in enumerate(tqdm(scriptdicts, desc="Creating Videos", unit="script")):
         clips = []
         
@@ -162,47 +164,27 @@ def create_video_from_scripts(scriptdicts, output_filenames, audio_dicts, sample
             audio_filename = f'temp_audio_{idx}_{scene_idx}.wav'
             audio_data = audio_dicts[idx][scene_idx]
             write(audio_filename, sample_rate, (np.array(audio_data) * 32767).astype(np.int16))  # Convert float to int16
+            
+            # Load the video frames using MoviePy
+            video_clip = VideoFileClip(video_filename)
+            
             audio_clip = AudioFileClip(audio_filename, fps=sample_rate)
             
-            video_frames = []
-            video_reader = iio.get_reader(video_filename, 'ffmpeg')
-            for frame in video_reader:
-                video_frames.append(frame)
-            video_reader.close()
-            frame_count = len(video_frames)
-            video_duration = frame_count / fps
+            video_duration = video_clip.duration
             audio_duration = audio_clip.duration
             
             if video_duration < audio_duration:
                 # Extend the video by looping
-                looped_video_clip = ImageSequenceClip(sequence=video_frames, fps=fps)
-                looped_video_clip = looped_video_clip.set_loop(duration=audio_duration, n=None, offset=0)
-                video_clip = looped_video_clip
+                video_clip = video_clip.loop(duration=audio_duration)
             elif video_duration > audio_duration:
                 # Trim the video to match the audio duration
-                trimmed_frames = []
-                for i, frame in enumerate(video_frames):
-                    if (i + 1) / fps <= audio_duration:
-                        trimmed_frames.append(frame)
-                with io.BytesIO() as buffer:
-                    writer = iio.get_writer(buffer, format='mp4', mode='I', fps=fps)
-                    for frame in trimmed_frames:
-                        np_frame = np.array(frame)
-                        writer.append_data(np_frame)
-                    writer.close()
-                    extended_video_bytes = buffer.getvalue()
-                
-                with open(video_filename, "wb") as f:
-                    f.write(extended_video_bytes)
+                video_clip = video_clip.subclip(0, audio_duration)
             
-            video_clip = ImageSequenceClip(sequence=video_frames, fps=fps)
-            video_clip = video_clip.set_audio(audio_clip)
-            
-            clips.append(video_clip)
+            final_clip = video_clip.set_audio(audio_clip)
+            clips.append(final_clip)
         
-        final_clip = concatenate_videoclips(clips)
-        final_clip.write_videofile(output_filenames[idx])
-        
+        final_video = concatenate_videoclips(clips)
+        final_video.write_videofile(output_filenames[idx], fps=fps)
         for scene_idx in range(len(scriptdict['scenes'])):
             video_filename = f'temp_video_{idx}_{scene_idx}.mp4'
             if os.path.exists(video_filename):
