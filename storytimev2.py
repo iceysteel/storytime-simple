@@ -14,7 +14,7 @@ from random import sample
 import gc
 from tqdm import tqdm
 from TTS.api import TTS
-from moviepy.editor import AudioFileClip, concatenate_videoclips, ImageSequenceClip
+from moviepy.editor import AudioFileClip, concatenate_videoclips, ImageSequenceClip, VideoFileClip
 from scipy.io.wavfile import write
 import os
 import ollama
@@ -229,6 +229,12 @@ def process_batch_of_scripts(batch_size=10):
                 if user_input.lower() != "y":
                     skip_to_next_story = input("Skip to the next story? (y/n): ")
                     if skip_to_next_story.lower() == "y":
+                         # Select a new random story index from the DataFrame
+                        story_indices.remove(storynum)
+                        new_story_index = sample(range(len(df)), 1)[0]
+                        while new_story_index in story_indices:
+                            new_story_index = sample(range(len(df)), 1)[0]
+                        story_indices.append(new_story_index)                            
                         break
                     else:
                         script_generated = False
