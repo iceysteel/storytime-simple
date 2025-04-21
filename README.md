@@ -1,5 +1,9 @@
 # AI Social Media Reddit Story Video Generator
 
+
+https://github.com/user-attachments/assets/a00d94c0-c583-48ca-b3f3-e67ce85f8644
+
+
 ## Overview
 
 This project automates the creation of engaging, short-form social media videos (like TikToks or Reels) based on popular Reddit stories. It leverages a multi-stage pipeline involving cutting-edge Generative AI models for scriptwriting, voice narration, and video generation, culminating in a final, edited video ready for posting.
