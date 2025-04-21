@@ -80,7 +80,7 @@ def convert_to_json(script):
     json_output = ollama.generate(
         model='qwen2.5:32b',
         format='json',
-        #keep_alive=1,
+        keep_alive=0,
         prompt=f"Take the following script and turn it into json format, it should be an array containing scenes, each scene should contain a imageDescription and voiceover field. In the voiceover string change any single quotes to double quotes. Here's the script: {script}"
     )
     return json.loads(json_output['response'])
@@ -196,7 +196,7 @@ def create_video_from_scripts(scriptdicts, output_filenames, audio_dicts, sample
 
 def process_batch_of_scripts(batch_size=10):
     setup_environment()
-    df = load_data('approved_stories.csv')
+    df = load_data('approved_stories_qwen.csv')
     story_indices = sample(range(len(df)), batch_size)
 
     scripts = []
